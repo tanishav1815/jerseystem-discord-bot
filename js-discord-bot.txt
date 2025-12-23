@@ -1,0 +1,115 @@
+## 🧠 Antigravity IDE Prompt — Discord Form Bot (with Buttons & Choices)
+
+**You are a senior software engineer.**
+
+Your task is to build a **generic Discord chatbot** that runs a Google-Form-style questionnaire inside a Discord channel.
+
+---
+
+### What the bot should do
+
+* Ask users a series of questions **one at a time** in a Discord channel.
+* Questions must be loaded from a **database** (no hardcoding).
+* The **order of questions** must come from the database.
+* The bot must track progress **per user**.
+* User answers must be persisted in the database.
+
+---
+
+### Question types (stored in DB)
+
+Support these question types:
+
+* `text` → user replies with a message
+* `single_choice` → radio-button style (select exactly one)
+* `multiple_choice` → select one or more options
+* `yes_no` → shortcut for two-option choice
+
+Each question should have:
+
+* `id`
+* `question_text`
+* `question_type`
+* `order_index`
+* `is_required`
+* `choices` (array, for choice-based questions)
+
+---
+
+### Discord UI behavior
+
+* **Text questions** → user types a response
+* **Single-choice (radio)** → Discord buttons or select menu (one selection)
+* **Multiple-choice** → multi-select dropdown or buttons
+* Buttons/select menus should be disabled after selection
+* Bot acknowledges selection and moves to the next question
+
+---
+
+### Bot flow
+
+1. User runs `/start` (or similar).
+2. Bot loads questions ordered by `order_index`.
+3. Bot asks the current question.
+4. User answers:
+
+   * text message **OR**
+   * button / select menu interaction
+5. Bot validates required fields.
+6. Bot saves the answer.
+7. Bot advances to the next question.
+8. On completion, bot sends a confirmation message.
+
+---
+
+### Persistence requirements
+
+Store:
+
+* user ID
+* form ID
+* question ID
+* answer value (string or array)
+* timestamp
+* session state (current question index)
+
+Support:
+
+* Resume if user returns later
+* Restart form from the beginning
+
+---
+
+### Tech constraints
+
+* `discord.py`
+* SQLite
+* Clean separation of concerns:
+
+  * Discord interaction layer
+  * Form engine / state machine
+  * Database access layer
+
+---
+
+### Reference form
+
+Questions are conceptually based on a form like this:
+[https://docs.google.com/forms/d/e/1FAIpQLSddtWnMScPK-oKDS-2PPXcAdkLuKdRshebvtN1b0wiFdnQmbg/formResponse](https://docs.google.com/forms/d/e/1FAIpQLSddtWnMScPK-oKDS-2PPXcAdkLuKdRshebvtN1b0wiFdnQmbg/formResponse)
+
+---
+
+### Output expected
+
+* Database schema
+* State machine for question flow
+* Example code for:
+
+  * rendering buttons / select menus
+  * handling interaction callbacks
+  * storing answers
+  * advancing to the next question
+
+Build this as a **reusable form engine**, not a one-off bot.
+
+---
