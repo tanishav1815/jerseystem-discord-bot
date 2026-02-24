@@ -3,9 +3,6 @@ const { Client, GatewayIntentBits, Partials, Events, REST, Routes } = require('d
 const { initDb } = require('./db');
 const formEngine = require('./formEngine');
 
-// Initialize DB
-initDb();
-
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -28,6 +25,34 @@ client.once(Events.ClientReady, c => {
             name: 'start',
             description: 'Start the questionnaire',
         },
+        {
+            name: 'sync',
+            description: 'Sync questions from Google Sheets',
+        },
+        {
+            name: 'ask',
+            description: 'Ask a question using the knowledge base',
+            options: [
+                {
+                    name: 'query',
+                    type: 3, // STRING
+                    description: 'The question you want to ask',
+                    required: true
+                }
+            ]
+        },
+        {
+            name: 'announce',
+            description: 'Announce an event and collect Accept/Decline responses',
+            options: [
+                {
+                    name: 'event',
+                    type: 3, // STRING
+                    description: 'The name or description of the event',
+                    required: true
+                }
+            ]
+        }
     ];
 
     const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -49,12 +74,27 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isChatInputCommand()) {
         if (interaction.commandName === 'start') {
             await formEngine.startForm(interaction.user, interaction);
+        } else if (interaction.commandName === 'sync') {
+            await formEngine.syncQuestions(interaction);
+        } else if (interaction.commandName === 'ask') {
+            const query = interaction.options.getString('query');
+            await formEngine.askQuestion(interaction, query);
+        } else if (interaction.commandName === 'announce') {
+            const eventName = interaction.options.getString('event');
+            await formEngine.announceEvent(interaction, eventName);
         }
         return;
     }
 
     // 2. Buttons & Select Menus
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
+        if (interaction.isButton() && interaction.customId.startsWith('event_')) {
+            const response = interaction.customId === 'event_accept' ? 'Accept' : 'Decline';
+            const eventName = interaction.message.embeds[0]?.title || 'Unknown Event';
+            await formEngine.handleEventResponse(interaction, eventName, response);
+            return;
+        }
+
         const user = interaction.user;
         let answer = null;
 
@@ -78,7 +118,6 @@ client.on(Events.InteractionCreate, async interaction => {
             // Interaction components usually should be disabled after use. 
             // For this simple bot, we might just assume the user moves on.
             // Or we could edit the original message to disable components. 
-            // Let's skip disabling for now to keep code simple, but proceed flow.
 
             if (typeof result === 'string') {
                 // Error / Validation message
@@ -96,12 +135,12 @@ client.on(Events.MessageCreate, async message => {
     if (message.author.bot) return;
 
     // Check if user is in a session
-    const session = formEngine.getUserSession(message.author.id);
+    const session = await formEngine.getUserSession(message.author.id);
     if (!session || session.is_completed) return;
 
     // Check if current question expects text
     // We need to peek at the current question.
-    const questions = formEngine.getSortedQuestions();
+    const questions = await formEngine.getSortedQuestions();
     const currentQ = questions.find(q => q.order_index === session.current_order_index);
 
     if (currentQ && currentQ.question_type === 'text') {
@@ -117,4 +156,13 @@ client.on(Events.MessageCreate, async message => {
     }
 });
 
-client.login(TOKEN);
+// Initialize DB and then login
+(async () => {
+    try {
+        await initDb();
+        console.log('Database connected correctly.');
+        client.login(TOKEN);
+    } catch (e) {
+        console.error('Failed connecting or initializing DB:', e);
+    }
+})();

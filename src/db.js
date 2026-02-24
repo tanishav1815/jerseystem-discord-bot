@@ -1,58 +1,84 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+const mysql = require('mysql2/promise');
 
-const db = new Database('form_bot.sqlite');
+let pool;
 
-function initDb() {
-    // strict mode tables
-    db.exec(`
+async function initDb() {
+    pool = mysql.createPool({
+        host: process.env.DB_HOST || '127.0.0.1',
+        user: process.env.DB_USER || 'root',
+        password: process.env.DB_PASSWORD || 'root',
+        database: process.env.DB_NAME || 'discord_bot',
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0
+    });
+
+    await pool.execute(`
         CREATE TABLE IF NOT EXISTS questions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INT AUTO_INCREMENT PRIMARY KEY,
             question_text TEXT NOT NULL,
-            question_type TEXT NOT NULL, -- 'text', 'single_choice', 'multiple_choice', 'yes_no'
-            order_index INTEGER NOT NULL,
-            is_required INTEGER DEFAULT 1,
-            choices TEXT -- JSON array string
-        );
-
-        CREATE TABLE IF NOT EXISTS user_sessions (
-            user_id TEXT PRIMARY KEY,
-            current_order_index INTEGER DEFAULT 0,
-            is_completed INTEGER DEFAULT 0,
-            updated_at INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS answers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            question_id INTEGER NOT NULL,
-            response TEXT, -- JSON string or raw text
-            timestamp INTEGER
+            question_type VARCHAR(50) NOT NULL,
+            order_index INT NOT NULL,
+            is_required BOOLEAN DEFAULT TRUE,
+            choices TEXT
         );
     `);
 
-    // Seed data if empty
-    const count = db.prepare('SELECT count(*) as count FROM questions').get();
-    if (count.count === 0) {
+    await pool.execute(`
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            user_id VARCHAR(255) PRIMARY KEY,
+            current_order_index INT DEFAULT 0,
+            is_completed BOOLEAN DEFAULT FALSE,
+            updated_at BIGINT
+        );
+    `);
+
+    await pool.execute(`
+        CREATE TABLE IF NOT EXISTS answers (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            question_id INT NOT NULL,
+            response TEXT,
+            timestamp BIGINT
+        );
+    `);
+
+    await pool.execute(`
+        CREATE TABLE IF NOT EXISTS event_responses (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            event_name TEXT,
+            response VARCHAR(50),
+            timestamp BIGINT
+        );
+    `);
+
+    const [rows] = await pool.execute('SELECT count(*) as count FROM questions');
+    if (rows[0].count === 0) {
         console.log('Seeding database with sample questions...');
-        const insert = db.prepare(`
-            INSERT INTO questions (question_text, question_type, order_index, is_required, choices)
-            VALUES (@text, @type, @order, @req, @choices)
-        `);
 
         const questions = [
-            { text: "What is your full name?", type: "text", order: 1, req: 1, choices: null },
-            { text: "Which department are you in?", type: "single_choice", order: 2, req: 1, choices: JSON.stringify(["Engineering", "HR", "Sales", "Marketing"]) },
-            { text: "Do you have remote work experience?", type: "yes_no", order: 3, req: 1, choices: null },
-            { text: "Select your programming skills (Multiple)", type: "multiple_choice", order: 4, req: 0, choices: JSON.stringify(["JavaScript", "Python", "C++", "Rust", "Go"]) },
-            { text: "Any additional comments?", type: "text", order: 5, req: 0, choices: null }
+            ["What is your full name?", "text", 1, true, null],
+            ["Which department are you in?", "single_choice", 2, true, JSON.stringify(["Engineering", "HR", "Sales", "Marketing"])],
+            ["Do you have remote work experience?", "yes_no", 3, true, null],
+            ["Select your programming skills (Multiple)", "multiple_choice", 4, false, JSON.stringify(["JavaScript", "Python", "C++", "Rust", "Go"])],
+            ["Any additional comments?", "text", 5, false, null]
         ];
 
-        questions.forEach(q => insert.run(q));
+        for (const q of questions) {
+            await pool.execute(`
+                INSERT INTO questions (question_text, question_type, order_index, is_required, choices)
+                VALUES (?, ?, ?, ?, ?)
+            `, q);
+        }
     }
 }
 
+function getDb() {
+    return pool;
+}
+
 module.exports = {
-    db,
-    initDb
+    initDb,
+    getDb
 };
