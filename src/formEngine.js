@@ -207,6 +207,9 @@ class FormEngine {
             }
         }
 
+        // --- Step 3: MySQL Knowledge Base (Live database data) ---
+
+        // Step 3A: User name mappings (existing - Discord ID to real name)
         try {
             const [answers] = await getDb().execute(`
                 SELECT a.user_id, q.question_text, a.response
@@ -220,6 +223,54 @@ class FormEngine {
             });
             combinedDocText += dbContext + "\n";
         } catch (e) { }
+
+        // Step 3B: Members table (who is in the JerseySTEM community)
+        try {
+            // Members table only has: username, nickName, id
+            const [members] = await getDb().execute(
+                'SELECT username, nickName FROM Members LIMIT 200'
+            );
+            if (members.length > 0) {
+                let membersContext = "--- JerseySTEM Discord Members ---\n";
+                members.forEach(m => {
+                    const discord = m.username || m.nickName || 'N/A';
+                    membersContext += `Discord Handle: ${discord}\n`;
+                });
+                combinedDocText += membersContext + "\n";
+            }
+        } catch (e) {
+            console.log('MySQL Members context fetch skipped:', e.message);
+        }
+
+        // Step 3C: Contact table (Salesforce profile data per member)
+        try {
+            const [contacts] = await getDb().execute(`
+                SELECT FirstName, LastName, Discord_Handle__c, Email,
+                       T_Shirt_Size__c, School_Email__c, Graduation_Year__c,
+                       JerseySTEM_Department__c, JerseySTEM_Role__c
+                FROM Contact
+                WHERE Discord_Handle__c IS NOT NULL
+                LIMIT 200
+            `);
+            if (contacts.length > 0) {
+                let contactsContext = "--- JerseySTEM Contact Profiles (from Live Database) ---\n";
+                contacts.forEach(c => {
+                    const name = `${c.FirstName || ''} ${c.LastName || ''}`.trim();
+                    contactsContext += `Name: ${name}`;
+                    if (c.Discord_Handle__c) contactsContext += ` | Discord: ${c.Discord_Handle__c}`;
+                    if (c.Email) contactsContext += ` | Email: ${c.Email}`;
+                    if (c.T_Shirt_Size__c) contactsContext += ` | T-Shirt: ${c.T_Shirt_Size__c}`;
+                    if (c.School_Email__c) contactsContext += ` | School Email: ${c.School_Email__c}`;
+                    if (c.Graduation_Year__c) contactsContext += ` | Grad Year: ${c.Graduation_Year__c}`;
+                    if (c.JerseySTEM_Department__c) contactsContext += ` | Dept: ${c.JerseySTEM_Department__c}`;
+                    if (c.JerseySTEM_Role__c) contactsContext += ` | Role: ${c.JerseySTEM_Role__c}`;
+                    contactsContext += '\n';
+                });
+                combinedDocText += contactsContext + "\n";
+            }
+        } catch (e) {
+            console.log('MySQL Contact context fetch skipped:', e.message);
+        }
 
         return combinedDocText;
     }
@@ -246,7 +297,7 @@ class FormEngine {
             }
 
             if (!activity) {
-                await getDb().execute('INSERT INTO user_activity (user_id, username, last_online, last_notified) VALUES (?, ?, ?, ?)', [user.id, user.username, now, now]);
+                await getDb().execute('INSERT INTO user_activity (user_id, username, last_online, last_notified) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE last_online=VALUES(last_online), last_notified=VALUES(last_notified)', [user.id, user.username, now, now]);
             } else {
                 await getDb().execute('UPDATE user_activity SET last_online = ?, last_notified = ? WHERE user_id = ?', [now, now, user.id]);
             }
@@ -536,12 +587,12 @@ Be conversational, like a coworker texting.`;
             The JSON MUST have this exact structure:
             {
               "message": "The natural, conversational text you want to reply back to the user",
-              "update_sheet": true or false, // Set to true ONLY IF the user's VERY LAST MESSAGE is a direct answer to a question you just asked them (e.g. they reply '2' to your list of options), OR if they explicitly ask you to update a valid field in the Knowledge base.
-              "update_column": "The exact name of the data field (e.g., 'What is your T-shirt size?') if update_sheet is true",
-              "update_value": "The resolved value of their answer (e.g., if they typed 'L', resolve it to 'L') if update_sheet is true",
-              "target_user": "The exact 'First Name' or target identity to update if explicitly specified by the user (e.g., 'Jake Bayers'). If they are referring to themselves or don't specify, leave this as null."
+              "update_sheet": true or false, // ONLY set to true if the user uses a VERY EXPLICIT command like "update my T-shirt size to L" or "set Jake's graduation year to 2026". NEVER set this to true for greetings, questions, or general conversation.
+              "update_column": "The exact column name to update, ONLY if update_sheet is true",
+              "update_value": "The resolved value, ONLY if update_sheet is true",
+              "target_user": "The name of the person to update. null if the user is referring to themselves."
             }
-            Do NOT set update_sheet to true if the user is just initiating a new topic or making a statement. Wait for them to answer your question first, UNLESS they use an explicit command like "update my size to L" or "update Jake's size to L"!
+            CRITICAL: update_sheet must be FALSE for: greetings, questions, general chat, asking for information, or any message that is NOT a clear explicit update command.
 
             --- RECENT CHAT HISTORY ---
             (Use this to understand the context of the user's question if they are referring to something said recently)
@@ -591,30 +642,30 @@ Be conversational, like a coworker texting.`;
                 await interactionOrMessage.reply(messageToSend);
             }
 
-            // 5. Fire off the background silent sync if the bot extracted conversational data!
+            // 5. Fire off the background silent sync ONLY for explicit update commands
             if (doUpdate && updateCol && updateVal) {
                 try {
                     const payload = {
                         action: 'update_missing_info',
-                        user_id: interactionOrMessage.author.id,
-                        username: targetUserMatch ? targetUserMatch : interactionOrMessage.author.username, // Use extracted target or fallback to author
+                        user_id: interactionOrMessage.author?.id || 'unknown',
+                        username: targetUserMatch ? targetUserMatch : (interactionOrMessage.author?.username || 'unknown'),
                         column: updateCol,
                         value: updateVal,
                         timestamp: new Date().toISOString()
                     };
 
-                    // Send to Google Sheets over AppScript
+                    // Send to Google Sheets over AppScript (silent - no Discord message)
                     await axios.post(process.env.WEBHOOK_URL, payload);
 
-                    // Save to local MySQL instance
+                    // Save to local MySQL instance (silent - no Discord message)
                     await getDb().execute('INSERT INTO auto_updates (user_id, column_name, value, timestamp) VALUES (?, ?, ?, ?)', [
-                        interactionOrMessage.author.id,
+                        interactionOrMessage.author?.id || 'unknown',
                         updateCol,
                         updateVal,
                         Date.now()
                     ]);
 
-                    await interactionOrMessage.channel.send(`*(✅ Automatically updated your **${updateCol}** profile sheet with: **${updateVal}**)*`);
+                    console.log(`Silent auto-update: ${updateCol} = ${updateVal} for ${interactionOrMessage.author?.username}`);
                 } catch (e) {
                     console.log("Failed to blind-sync AI response:", e.message);
                 }

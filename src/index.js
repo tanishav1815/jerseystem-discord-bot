@@ -8,7 +8,8 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.DirectMessages
+        GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.GuildPresences  // Required for PresenceUpdate event
     ],
     partials: [Partials.Channel] // For DMs
 });
@@ -245,6 +246,34 @@ client.on(Events.MessageCreate, async message => {
         } else if (result && result.finished) {
             await message.channel.send(`Thank you ${message.author.username}, you have completed the form!`);
         }
+    }
+});
+
+// Greet users when they come online (Option B: Presence Intent)
+client.on(Events.PresenceUpdate, async (oldPresence, newPresence) => {
+    try {
+        // Only trigger when user transitions FROM offline TO any online state
+        const wasOffline = !oldPresence || oldPresence.status === 'offline';
+        const isNowOnline = newPresence.status !== 'offline';
+
+        if (!wasOffline || !isNowOnline) return; // Not a login event
+
+        const user = newPresence.user;
+        if (!user || user.bot) return; // Ignore bots and undefined users
+
+        // Send a welcome-back DM directly to the user
+        try {
+            await user.send(`👋 Hey ${user.username}, welcome back! Great to see you online. 🌟`);
+        } catch (dmErr) {
+            // User may have DMs disabled — silently skip
+            console.log(`Could not DM ${user.username} on login: ${dmErr.message}`);
+        }
+
+        // Also trigger proactive missing info check (DMs them if there are missing fields)
+        await formEngine.handleUserOnline(user);
+
+    } catch (e) {
+        console.error('PresenceUpdate error:', e.message);
     }
 });
 
