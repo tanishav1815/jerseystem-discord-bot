@@ -5,30 +5,33 @@ const { GoogleGenAI } = require('@google/genai');
 
 class FormEngine {
     constructor() {
-        this.onlineLocks = new Set();
+        this.onlineLocks = new Set(); // Prevents duplicate concurrent triggers per user
 
-        // --- Interactive field options for missing info questions ---
-        // Keys are matched case-insensitively against AI_fields FIELD_LABEL values
+        // --- Group name → URL-safe slug mapping ---
+        this.groupSlugs = {
+            'School & Education': 'school_education',
+            'Teaching Info': 'teaching_info',
+            'Availability & Transport': 'availability_transport',
+            'JerseySTEM Role': 'jerseySTEM_role',
+            'Personal & Profile': 'personal_profile'
+        };
+        this.slugToGroup = Object.fromEntries(
+            Object.entries(this.groupSlugs).map(([k, v]) => [v, k])
+        );
+        this.groupEmojis = {
+            'School & Education': '🎓',
+            'Teaching Info': '📚',
+            'Availability & Transport': '🚗',
+            'JerseySTEM Role': '⭐',
+            'Personal & Profile': '👤'
+        };
+
+        // --- Interactive field options for missing info questions (legacy single-field) ---
         this.fieldOptions = {
-            't-shirt_size(adult)': {
-                type: 'buttons',
-                label: 'T-Shirt Size',
-                choices: ['XS', 'S', 'M', 'L', 'XL']
-            },
-            't-shirt size': {
-                type: 'buttons',
-                label: 'T-Shirt Size',
-                choices: ['XS', 'S', 'M', 'L', 'XL']
-            },
-            'school email': {
-                type: null, // freeform text input
-                label: 'School Email'
-            },
-            'graduation year': {
-                type: 'dropdown',
-                label: 'Graduation Year',
-                choices: ['2024', '2025', '2026', '2027', '2028', '2029']
-            }
+            't-shirt_size(adult)': { type: 'buttons', label: 'T-Shirt Size', choices: ['XS', 'S', 'M', 'L', 'XL'] },
+            't-shirt size': { type: 'buttons', label: 'T-Shirt Size', choices: ['XS', 'S', 'M', 'L', 'XL'] },
+            'school email': { type: null, label: 'School Email' },
+            'graduation year': { type: 'dropdown', label: 'Graduation Year', choices: ['2024', '2025', '2026', '2027', '2028', '2029'] }
         };
     }
 
@@ -65,7 +68,7 @@ class FormEngine {
                 contents: prompt,
             });
             return aiResponse.text.trim();
-        } catch(e) {
+        } catch (e) {
             console.log(`Gemini rate limited, using fallback message for: ${fieldName}`);
             return this._getFallbackMessage(fieldName, remaining);
         }
@@ -315,7 +318,7 @@ class FormEngine {
                 if (memberRows.length > 0) {
                     discordHandle = memberRows[0].username;
                 }
-            } catch(e) {
+            } catch (e) {
                 console.log('Members lookup error:', e.message);
             }
 
@@ -331,7 +334,7 @@ class FormEngine {
                     if (nameRows.length > 0 && nameRows[0].response) {
                         realName = nameRows[0].response.trim();
                     }
-                } catch(e) {}
+                } catch (e) { }
 
                 if (!realName) {
                     console.log(`Could not identify ${user.username} in Contact or Members table. Skipping.`);
@@ -365,7 +368,7 @@ class FormEngine {
                         realName = contactRow.FirstName || contactRow.Name || realName;
                     }
                 }
-            } catch(e) {
+            } catch (e) {
                 console.log('Contact lookup error:', e.message);
             }
 
@@ -380,25 +383,28 @@ class FormEngine {
 
             try {
                 const [aiFields] = await getDb().execute(
-                    "SELECT FIELD_NAME, FIELD_LABEL, LEVEL FROM AI_fields ORDER BY CASE LEVEL WHEN 'Required' THEN 1 WHEN 'optional' THEN 2 WHEN 'nice to have' THEN 3 ELSE 4 END"
+                    `SELECT FIELD_NAME, FIELD_LABEL, LEVEL, GROUP_NAME, SORT_ORDER
+                     FROM AI_fields
+                     ORDER BY
+                       CASE LEVEL WHEN 'Required' THEN 1 WHEN 'optional' THEN 2 WHEN 'nice to have' THEN 3 ELSE 4 END,
+                       GROUP_NAME, SORT_ORDER`
                 );
 
                 for (const field of aiFields) {
                     const columnName = field.FIELD_NAME;
                     const value = contactRow[columnName];
-
-                    // Check if the field is NULL or empty
                     if (value === null || value === undefined || String(value).trim() === '') {
                         missingFields.push({
                             column: columnName,
                             label: field.FIELD_LABEL,
-                            level: field.LEVEL
+                            level: field.LEVEL,
+                            group: field.GROUP_NAME || 'General'
                         });
                     }
                 }
 
                 console.log(`AI_fields scan for ${realName}: ${missingFields.length} missing out of ${aiFields.length} fields`);
-            } catch(e) {
+            } catch (e) {
                 console.log('AI_fields scan error:', e.message);
             }
 
@@ -414,7 +420,7 @@ class FormEngine {
                 if (nextQ.status === 'pending') {
                     await getDb().execute("UPDATE pending_updates SET status = 'asked' WHERE id = ?", [nextQ.id]);
                 }
-                
+
                 const prompt = `You are a friendly, casual Discord bot for JerseySTEM. Write a SHORT (under 40 words), natural-sounding DM asking the user "${realName}" for their "${nextQ.missing_column}". Be conversational, use an emoji, and do NOT start with "Hey". Just ask the question naturally like a friend texting.`;
                 const introText = await this._getSmartMessage(prompt, nextQ.missing_column, existingPending.length);
                 await this.sendMissingFieldQuestion(user, nextQ.missing_column, introText);
@@ -430,37 +436,19 @@ class FormEngine {
                 return false;
             }
 
-            // --- STEP 4: Queue ALL missing fields into pending_updates ---
-            const fieldLabels = missingFields.map(f => f.label);
-            console.log(`Found ${missingFields.length} missing fields for ${realName}: ${fieldLabels.join(', ')}`);
+            // --- STEP 4: Group missing fields by GROUP_NAME ---
+            const groupedFields = {};
             for (const field of missingFields) {
-                await getDb().execute(
-                    'INSERT INTO pending_updates (user_id, missing_column, status, timestamp) VALUES (?, ?, ?, ?)',
-                    [user.id, field.label, 'pending', now]
-                );
+                const g = field.group || 'General';
+                if (!groupedFields[g]) groupedFields[g] = [];
+                groupedFields[g].push(field);
             }
 
-            // --- STEP 5: Ask about the FIRST missing field with a friendly AI message ---
-            const firstField = missingFields[0];
-            const firstLabel = firstField.label;
-            await getDb().execute(
-                "UPDATE pending_updates SET status = 'asked' WHERE user_id = ? AND missing_column = ? AND status = 'pending' LIMIT 1",
-                [user.id, firstLabel]
-            );
+            const numGroups = Object.keys(groupedFields).length;
+            console.log(`Sending grouped missing-info embed to ${user.username} — ${numGroups} groups, ${missingFields.length} total fields`);
 
-            const firstPrompt = `You are a friendly, casual Discord bot for JerseySTEM. The user "${realName}" just came online and they have ${missingFields.length} missing pieces of information in their profile. The missing fields are: ${fieldLabels.join(', ')}. 
-                
-Write a SHORT (under 50 words), warm, natural-sounding DM that:
-1. Greets them casually (do NOT start with "Hey [Name]!" — vary it)
-2. Mentions they have a few gaps in their profile
-3. Asks them specifically for their "${firstLabel}" first
-4. Uses an emoji or two
-Be conversational, like a coworker texting.`;
-
-            const introText = await this._getSmartMessage(firstPrompt, firstLabel, missingFields.length);
-            await this.sendMissingFieldQuestion(user, firstLabel, introText);
-            console.log(`Sent proactive DM for Missing Info to ${user.username} — asking about: ${firstLabel}`);
-            
+            // --- STEP 5: Send ONE embed with a button per group ---
+            await this.sendGroupedMissingEmbed(user, groupedFields, realName);
             return true;
 
         } catch (e) {
@@ -469,6 +457,157 @@ Be conversational, like a coworker texting.`;
         } finally {
             this.onlineLocks.delete(user.id);
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // SMART GROUPING METHODS
+    // ─────────────────────────────────────────────────────────────
+
+    async sendGroupedMissingEmbed(user, groupedFields, realName) {
+        const groupNames = Object.keys(groupedFields);
+        const totalMissing = Object.values(groupedFields).reduce((sum, arr) => sum + arr.length, 0);
+
+        const embed = new EmbedBuilder()
+            .setTitle('📋 Complete Your JerseySTEM Profile')
+            .setDescription(
+                `Hi **${realName}**! 👋 Your profile has **${totalMissing} missing field(s)** across **${groupNames.length} section(s)**.\n\n` +
+                `Click a button below to fill in each section — it only takes a moment! ✨`
+            )
+            .setColor(0x00B0F0);
+
+        for (const [groupName, fields] of Object.entries(groupedFields)) {
+            const emoji = this.groupEmojis[groupName] || '📝';
+            embed.addFields({
+                name: `${emoji} ${groupName}`,
+                value: fields.map(f => `• ${f.label}${f.level === 'Required' ? ' *(required)*' : ''}`).join('\n'),
+                inline: true
+            });
+        }
+
+        const rows = [];
+        let currentRow = new ActionRowBuilder();
+        let count = 0;
+        for (const groupName of groupNames) {
+            if (count > 0 && count % 3 === 0) {
+                rows.push(currentRow);
+                currentRow = new ActionRowBuilder();
+            }
+            const slug = this.groupSlugs[groupName] || groupName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+            const emoji = this.groupEmojis[groupName] || '📝';
+            currentRow.addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`group_btn_${slug}`)
+                    .setLabel(`${emoji} ${groupName}`)
+                    .setStyle(ButtonStyle.Primary)
+            );
+            count++;
+        }
+        rows.push(currentRow);
+
+        try {
+            const dmChannel = await user.createDM();
+            await dmChannel.send({ embeds: [embed], components: rows });
+        } catch (e) {
+            console.log(`Could not DM grouped embed to ${user.username}: ${e.message}`);
+        }
+    }
+
+    async handleGroupButtonClick(interaction) {
+        const slug = interaction.customId.replace('group_btn_', '');
+        const groupName = this.slugToGroup[slug];
+
+        if (!groupName) {
+            return interaction.reply({ content: '❌ Unknown group. Please try again.', ephemeral: true });
+        }
+
+        const [aiFields] = await getDb().execute(
+            'SELECT FIELD_NAME, FIELD_LABEL, LEVEL FROM AI_fields WHERE GROUP_NAME = ? ORDER BY SORT_ORDER',
+            [groupName]
+        );
+
+        if (aiFields.length === 0) {
+            return interaction.reply({ content: '⚠️ No fields configured for this group.', ephemeral: true });
+        }
+
+        await this.sendGroupModal(interaction, groupName, aiFields);
+    }
+
+    async sendGroupModal(interaction, groupName, fields) {
+        const emoji = this.groupEmojis[groupName] || '📝';
+        const slug = this.groupSlugs[groupName] || groupName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+
+        const modal = new ModalBuilder()
+            .setCustomId(`group_modal_${slug}`)
+            .setTitle(`${emoji} ${groupName}`.substring(0, 45));
+
+        const fieldsToShow = fields.slice(0, 5);
+        for (const field of fieldsToShow) {
+            const input = new TextInputBuilder()
+                .setCustomId(`gf_${field.FIELD_NAME}`)
+                .setLabel(field.FIELD_LABEL.substring(0, 45))
+                .setStyle(TextInputStyle.Short)
+                .setRequired(field.LEVEL === 'Required')
+                .setPlaceholder(`Enter your ${field.FIELD_LABEL}`.substring(0, 100));
+            modal.addComponents(new ActionRowBuilder().addComponents(input));
+        }
+
+        await interaction.showModal(modal);
+    }
+
+    async handleGroupModalSubmit(interaction) {
+        await interaction.deferReply({ ephemeral: true });
+
+        let saved = 0;
+        const errors = [];
+
+        for (const [customId, component] of interaction.fields.fields) {
+            const columnName = customId.replace('gf_', '');
+            const value = component.value?.trim();
+            if (!value) continue;
+
+            try {
+                await this._updateContactByColumnName(interaction.user, columnName, value);
+                saved++;
+            } catch (e) {
+                errors.push(columnName);
+                console.error(`Failed to save ${columnName}:`, e.message);
+            }
+        }
+
+        const msg = saved > 0
+            ? `✅ Saved **${saved}** field(s) to your profile!` + (errors.length ? `\n⚠️ Could not save: ${errors.join(', ')}` : '')
+            : `⚠️ No fields were saved. Please fill in at least one field.`;
+
+        await interaction.followUp({ content: msg, ephemeral: true });
+    }
+
+    async _updateContactByColumnName(discordUser, columnName, value) {
+        // Validate against AI_fields to prevent SQL injection
+        const [validFields] = await getDb().execute(
+            'SELECT FIELD_NAME FROM AI_fields WHERE FIELD_NAME = ? LIMIT 1',
+            [columnName]
+        );
+        if (validFields.length === 0) throw new Error(`Column "${columnName}" not in AI_fields`);
+
+        // Look up their Discord handle
+        const [memberRows] = await getDb().execute(
+            'SELECT username FROM Members WHERE username = ? OR nickName = ? LIMIT 1',
+            [discordUser.username, discordUser.username]
+        );
+        const discordHandle = memberRows.length > 0 ? memberRows[0].username : discordUser.username;
+
+        // Write to Contact
+        await getDb().execute(
+            `UPDATE Contact SET \`${columnName}\` = ? WHERE Discord_Handle__c = ? LIMIT 1`,
+            [value, discordHandle]
+        );
+
+        // Audit log
+        await getDb().execute(
+            'INSERT INTO auto_updates (user_id, column_name, value, timestamp) VALUES (?, ?, ?, ?)',
+            [discordUser.id, columnName, value, Date.now()]
+        );
+        console.log(`[GroupModal] ${discordUser.username}: ${columnName} = "${value}"`);
     }
 
     /**
@@ -970,7 +1109,7 @@ Be conversational, like a coworker texting.`;
                     if (user && !user.bot) {
                         await this.handleUserOnline(user, true); // force=true to ignore cooldowns
                     }
-                } catch(e) { /* user left or not found */ }
+                } catch (e) { /* user left or not found */ }
             }
             console.log("Full background audit complete.");
         } catch (e) {
@@ -1037,7 +1176,7 @@ Be conversational, like a coworker texting.`;
                         LIMIT 1
                     `, [message.author.id]);
                     if (nameRows.length > 0) realName = nameRows[0].response.trim();
-                } catch(e) {}
+                } catch (e) { }
 
                 // Count remaining
                 const [remaining] = await getDb().execute(
@@ -1080,19 +1219,19 @@ Be conversational, like a coworker texting.`;
                 'SELECT username FROM Members WHERE username = ? OR nickName = ? LIMIT 1',
                 [discordUser.username, discordUser.username]
             );
-            
+
             let discordHandle = discordUser.username;
             if (members.length > 0) discordHandle = members[0].username;
 
             // 3. Update Contact directly! (Ensuring safety against SQL injection by allowing only mapped column names)
             await getDb().execute(
-                `UPDATE Contact SET ${columnName} = ? WHERE Discord_Handle__c = ? LIMIT 1`, 
+                `UPDATE Contact SET ${columnName} = ? WHERE Discord_Handle__c = ? LIMIT 1`,
                 [value, discordHandle]
             );
-            
+
             console.log(`Successfully wrote to Contact table: ${discordHandle}'s ${columnName} = ${value}`);
             return true;
-        } catch(e) {
+        } catch (e) {
             console.error('Failed to write directly to Contact table:', e.message);
             return false;
         }
@@ -1178,7 +1317,7 @@ Be conversational, like a coworker texting.`;
                         LIMIT 1
                     `, [userId]);
                     if (nameRows.length > 0) realName = nameRows[0].response.trim();
-                } catch(e) {}
+                } catch (e) { }
 
                 const [remaining] = await getDb().execute(
                     "SELECT COUNT(*) as cnt FROM pending_updates WHERE user_id = ? AND status = 'pending'",
@@ -1202,7 +1341,7 @@ Be conversational, like a coworker texting.`;
             console.error("Failed interactive two-way sync:", e.message);
             try {
                 await interaction.reply({ content: "Thanks! (Note: I had trouble saving this, but I've noted your answer).", ephemeral: true });
-            } catch(err) {}
+            } catch (err) { }
         }
     }
 }

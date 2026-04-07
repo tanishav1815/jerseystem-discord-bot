@@ -113,6 +113,11 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
     if (interaction.isModalSubmit()) {
+        // Smart Grouping: group modal submission (e.g. School & Education form)
+        if (interaction.customId.startsWith('group_modal_')) {
+            await formEngine.handleGroupModalSubmit(interaction);
+            return;
+        }
         if (interaction.customId === 'ask_modal') {
             const query = interaction.fields.getTextInputValue('query_input');
             await formEngine.askQuestion(interaction, query);
@@ -129,6 +134,12 @@ client.on(Events.InteractionCreate, async interaction => {
             const response = interaction.customId === 'event_accept' ? 'Accept' : 'Decline';
             const eventName = interaction.message.embeds[0]?.title || 'Unknown Event';
             await formEngine.handleEventResponse(interaction, eventName, response);
+            return;
+        }
+
+        // --- Smart Grouping: group category button click ---
+        if (interaction.isButton() && interaction.customId.startsWith('group_btn_')) {
+            await formEngine.handleGroupButtonClick(interaction);
             return;
         }
 
@@ -249,27 +260,32 @@ client.on(Events.MessageCreate, async message => {
     }
 });
 
+// Dedup lock — Discord sometimes fires PresenceUpdate twice per login
+const presenceLocks = new Set();
+
 // Greet users when they come online (Option B: Presence Intent)
 client.on(Events.PresenceUpdate, async (oldPresence, newPresence) => {
     try {
-        // Only trigger when user transitions FROM offline TO any online state
         const wasOffline = !oldPresence || oldPresence.status === 'offline';
         const isNowOnline = newPresence.status !== 'offline';
-
-        if (!wasOffline || !isNowOnline) return; // Not a login event
+        if (!wasOffline || !isNowOnline) return;
 
         const user = newPresence.user;
-        if (!user || user.bot) return; // Ignore bots and undefined users
+        if (!user || user.bot) return;
 
-        // Send a welcome-back DM directly to the user
+        // Prevent firing twice for the same login event
+        if (presenceLocks.has(user.id)) return;
+        presenceLocks.add(user.id);
+        setTimeout(() => presenceLocks.delete(user.id), 10000); // Clear after 10s
+
+        // Send welcome-back DM
         try {
             await user.send(`👋 Hey ${user.username}, welcome back! Great to see you online. 🌟`);
         } catch (dmErr) {
-            // User may have DMs disabled — silently skip
             console.log(`Could not DM ${user.username} on login: ${dmErr.message}`);
         }
 
-        // Also trigger proactive missing info check (DMs them if there are missing fields)
+        // Trigger proactive missing info check
         await formEngine.handleUserOnline(user);
 
     } catch (e) {
