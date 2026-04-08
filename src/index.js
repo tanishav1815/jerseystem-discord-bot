@@ -2,6 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, Partials, Events, REST, Routes } = require('discord.js');
 const { initDb, getDb } = require('./db');
 const formEngine = require('./formEngine');
+const { isAdmin, hasAnyRole, denyAccess } = require('./permissions');
 
 const client = new Client({
     intents: [
@@ -94,17 +95,29 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isChatInputCommand()) {
         if (interaction.commandName === 'start') {
             await formEngine.startForm(interaction.user, interaction);
+
         } else if (interaction.commandName === 'sync') {
+            // 🔒 Admin only
+            if (!isAdmin(interaction)) return denyAccess(interaction);
             await formEngine.syncQuestions(interaction);
+
         } else if (interaction.commandName === 'ask') {
+            // ✅ All roles — data visibility enforced inside askQuestion
             const query = interaction.options.getString('query');
             await formEngine.askQuestion(interaction, query);
+
         } else if (interaction.commandName === 'announce') {
+            // 🔒 Admin only
+            if (!isAdmin(interaction)) return denyAccess(interaction);
             const eventName = interaction.options.getString('event');
             await formEngine.announceEvent(interaction, eventName);
+
         } else if (interaction.commandName === 'menu') {
             await formEngine.sendMainMenu(interaction);
+
         } else if (interaction.commandName === 'audit_missing') {
+            // 🔒 Admin only
+            if (!isAdmin(interaction)) return denyAccess(interaction);
             await interaction.reply({ content: '🔍 Starting background audit of all users...', ephemeral: true });
             await formEngine.auditAllUsers(client);
             await interaction.followUp({ content: '✅ Finished dispatching background missing information requests!', ephemeral: true });

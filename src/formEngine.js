@@ -2,6 +2,7 @@ const { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, E
 const { getDb } = require('./db');
 const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
+const { isAdmin: checkIsAdmin } = require('./permissions');
 
 class FormEngine {
     constructor() {
@@ -286,8 +287,8 @@ class FormEngine {
         this.onlineLocks.add(user.id);
 
         const now = Date.now();
-        // Cooldown between DMs: Wait 2 days (48 hours)
-        const COOLDOWN = 48 * 60 * 60 * 1000;
+        // Cooldown between DMs: Wait 24 hours
+        const COOLDOWN = 24 * 60 * 60 * 1000;
 
         try {
             const [rows] = await getDb().execute('SELECT * FROM user_activity WHERE user_id = ?', [user.id]);
@@ -467,21 +468,53 @@ class FormEngine {
         const groupNames = Object.keys(groupedFields);
         const totalMissing = Object.values(groupedFields).reduce((sum, arr) => sum + arr.length, 0);
 
+        // Fetch ALL AI_fields to show complete status (filled + missing) per group
+        let allFieldsByGroup = {};
+        try {
+            const [allFields] = await getDb().execute(
+                'SELECT FIELD_NAME, FIELD_LABEL, LEVEL, GROUP_NAME FROM AI_fields ORDER BY GROUP_NAME, SORT_ORDER'
+            );
+            // Look up Contact record to get existing values
+            const [memberRows] = await getDb().execute(
+                'SELECT username FROM Members WHERE username = ? OR nickName = ? LIMIT 1',
+                [user.username, user.username]
+            );
+            const handle = memberRows.length > 0 ? memberRows[0].username : user.username;
+            const [contactRows] = await getDb().execute(
+                'SELECT * FROM Contact WHERE Discord_Handle__c = ? LIMIT 1', [handle]
+            );
+            const contact = contactRows[0] || {};
+
+            for (const f of allFields) {
+                const g = f.GROUP_NAME || 'General';
+                if (!allFieldsByGroup[g]) allFieldsByGroup[g] = [];
+                const val = contact[f.FIELD_NAME];
+                const filled = val !== null && val !== undefined && String(val).trim() !== '';
+                allFieldsByGroup[g].push({ ...f, filled, currentValue: filled ? String(val).trim() : null });
+            }
+        } catch (e) {
+            // Fallback: just use the missing fields we already have
+            allFieldsByGroup = groupedFields;
+        }
+
         const embed = new EmbedBuilder()
-            .setTitle('📋 Complete Your JerseySTEM Profile')
+            .setTitle('📋 Your JerseySTEM Profile Status')
             .setDescription(
-                `Hi **${realName}**! 👋 Your profile has **${totalMissing} missing field(s)** across **${groupNames.length} section(s)**.\n\n` +
-                `Click a button below to fill in each section — it only takes a moment! ✨`
+                `Hi **${realName}**! 👋 You have **${totalMissing} missing field(s)** to complete.\n\n` +
+                `Click a button below to fill in a section. Fields marked ✅ are already saved! ✨`
             )
             .setColor(0x00B0F0);
 
-        for (const [groupName, fields] of Object.entries(groupedFields)) {
+        for (const [groupName, fields] of Object.entries(allFieldsByGroup)) {
+            // Only show groups that have at least one missing field
+            if (!groupedFields[groupName]) continue;
             const emoji = this.groupEmojis[groupName] || '📝';
-            embed.addFields({
-                name: `${emoji} ${groupName}`,
-                value: fields.map(f => `• ${f.label}${f.level === 'Required' ? ' *(required)*' : ''}`).join('\n'),
-                inline: true
-            });
+            const fieldLines = fields.map(f =>
+                f.filled
+                    ? `✅ ~~${f.FIELD_LABEL || f.label}~~`
+                    : `❌ ${f.FIELD_LABEL || f.label}${(f.LEVEL || f.level) === 'Required' ? ' *(required)*' : ''}`
+            ).join('\n');
+            embed.addFields({ name: `${emoji} ${groupName}`, value: fieldLines, inline: true });
         }
 
         const rows = [];
@@ -529,10 +562,28 @@ class FormEngine {
             return interaction.reply({ content: '⚠️ No fields configured for this group.', ephemeral: true });
         }
 
-        await this.sendGroupModal(interaction, groupName, aiFields);
+        // Fetch user's current Contact values so modal inputs can be pre-populated
+        let currentValues = {};
+        try {
+            const [memberRows] = await getDb().execute(
+                'SELECT username FROM Members WHERE username = ? OR nickName = ? LIMIT 1',
+                [interaction.user.username, interaction.user.username]
+            );
+            const handle = memberRows.length > 0 ? memberRows[0].username : interaction.user.username;
+            const [contactRows] = await getDb().execute(
+                'SELECT * FROM Contact WHERE Discord_Handle__c = ? LIMIT 1', [handle]
+            );
+            if (contactRows.length > 0) {
+                currentValues = contactRows[0];
+            }
+        } catch (e) {
+            console.log('Could not fetch current values for pre-population:', e.message);
+        }
+
+        await this.sendGroupModal(interaction, groupName, aiFields, currentValues);
     }
 
-    async sendGroupModal(interaction, groupName, fields) {
+    async sendGroupModal(interaction, groupName, fields, currentValues = {}) {
         const emoji = this.groupEmojis[groupName] || '📝';
         const slug = this.groupSlugs[groupName] || groupName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
 
@@ -542,12 +593,21 @@ class FormEngine {
 
         const fieldsToShow = fields.slice(0, 5);
         for (const field of fieldsToShow) {
+            const existingVal = currentValues[field.FIELD_NAME];
+            const hasValue = existingVal !== null && existingVal !== undefined && String(existingVal).trim() !== '';
+
             const input = new TextInputBuilder()
                 .setCustomId(`gf_${field.FIELD_NAME}`)
                 .setLabel(field.FIELD_LABEL.substring(0, 45))
                 .setStyle(TextInputStyle.Short)
-                .setRequired(field.LEVEL === 'Required')
-                .setPlaceholder(`Enter your ${field.FIELD_LABEL}`.substring(0, 100));
+                .setRequired(field.LEVEL === 'Required' && !hasValue) // not required if already filled
+                .setPlaceholder(hasValue ? `Current: ${String(existingVal).trim()}` : `Enter your ${field.FIELD_LABEL}`.substring(0, 100));
+
+            // Pre-populate with existing value so user sees what's already saved
+            if (hasValue) {
+                input.setValue(String(existingVal).trim().substring(0, 4000));
+            }
+
             modal.addComponents(new ActionRowBuilder().addComponents(input));
         }
 
@@ -684,6 +744,13 @@ class FormEngine {
 
         const isInteraction = typeof interactionOrMessage.deferReply === 'function';
 
+        // --- RBAC: Determine what data this user is allowed to see ---
+        const userIsAdmin = isInteraction ? checkIsAdmin(interactionOrMessage) : false;
+        const askerUsername = interactionOrMessage.user?.username || interactionOrMessage.author?.username || 'unknown';
+        const rbacInstruction = userIsAdmin
+            ? `The user asking is an ADMIN — they may retrieve information about ANY member, including personal data (emails, T-shirt sizes, school info, background).`
+            : `The user asking is a PROGRAM INSTRUCTOR (username: ${askerUsername}). They may ONLY retrieve information about themselves. If the question appears to ask about another specific member's personal data (email, phone, T-shirt size, background info), respond with: "I can only show you your own profile information. Please contact an Admin for other members' data." — do NOT reveal that data.`;
+
         if (isInteraction) {
             await interactionOrMessage.deferReply();
         } else {
@@ -714,9 +781,21 @@ class FormEngine {
 
             // 2. Build the prompt for Gemini
             const prompt = `
-            You are an intelligent, conversational assistant for a Discord community. 
-            Use the Knowledge Base below as a resource to guide your conversation, but DO NOT rigidly repeat it verbatim. Respond naturally as a human would.
-            Do not say "I don't have enough information" if you can actively infer the context from the recent chat history.
+            You are **DisBot**, JerseySTEM's friendly and knowledgeable community assistant. JerseySTEM is a non-profit STEM education organization connecting students, instructors, mentors, and volunteers.
+
+            Your personality:
+            - Warm, encouraging, and professional — like a helpful team coordinator
+            - Keep responses concise unless detail is truly needed
+            - For greetings (hi, hello, hey), respond briefly and offer to help with JerseySTEM topics
+            - For off-topic questions (general trivia, homework help), politely say: "I'm best at helping with JerseySTEM info — members, events, programs, or profiles!"
+            - Never make up data. If you don't know, say so clearly.
+
+            Use the Knowledge Base below to answer questions. Do NOT rigidly repeat it verbatim — respond naturally.
+            Do not say "I don't have enough information" if you can infer from the recent chat history.
+
+            --- ACCESS CONTROL POLICY ---
+            ${rbacInstruction}
+            -----------------------------
 
             CRITICAL SHEET INSTRUCTION: When reading the "Event Participation" spreadsheet (GID 103041255):
             - If a person has a "Y" under an event/date, they attended. 
@@ -812,10 +891,14 @@ class FormEngine {
 
         } catch (error) {
             console.error('Ask error:', error);
+            const is503 = error?.status === 503 || error?.message?.includes('503') || error?.message?.includes('UNAVAILABLE');
+            const userMsg = is503
+                ? '⏳ The AI is currently busy due to high demand. Please try again in sometime!'
+                : 'Sorry, I encountered an error trying to process your question.';
             if (isInteraction) {
-                await interactionOrMessage.followUp('Sorry, I encountered an error trying to process your question.');
+                await interactionOrMessage.followUp(userMsg);
             } else {
-                await interactionOrMessage.reply('Sorry, I encountered an error trying to process your question.');
+                await interactionOrMessage.reply(userMsg);
             }
         }
     }
