@@ -1,17 +1,16 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Partials, Events, REST, Routes } = require('discord.js');
-const { initDb } = require('./db');
+const { initDb, getDb } = require('./db');
 const formEngine = require('./formEngine');
-
-// Initialize DB
-initDb();
+const { isAdmin, hasAnyRole, denyAccess } = require('./permissions');
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.DirectMessages
+        GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.GuildPresences  // Required for PresenceUpdate event
     ],
     partials: [Partials.Channel] // For DMs
 });
@@ -28,6 +27,42 @@ client.once(Events.ClientReady, c => {
             name: 'start',
             description: 'Start the questionnaire',
         },
+        {
+            name: 'sync',
+            description: 'Sync questions from Google Sheets',
+        },
+        {
+            name: 'ask',
+            description: 'Ask a question using the knowledge base',
+            options: [
+                {
+                    name: 'query',
+                    type: 3, // STRING
+                    description: 'The question you want to ask',
+                    required: true
+                }
+            ]
+        },
+        {
+            name: 'announce',
+            description: 'Announce an event and collect Accept/Decline responses',
+            options: [
+                {
+                    name: 'event',
+                    type: 3, // STRING
+                    description: 'The name or description of the event',
+                    required: true
+                }
+            ]
+        },
+        {
+            name: 'menu',
+            description: 'Send the Main Navigation Menu',
+        },
+        {
+            name: 'audit_missing',
+            description: 'Manually force a scan of all known users for missing information and ping them',
+        }
     ];
 
     const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -42,19 +77,104 @@ client.once(Events.ClientReady, c => {
             console.error(error);
         }
     })();
+
+    // Background CRON sweep: automatically scan every 24 hours (86400000ms) for missing info
+    setInterval(() => {
+        console.log("Triggering 24-hr CRON sweep for missing information...");
+        formEngine.auditAllUsers(client);
+    }, 24 * 60 * 60 * 1000);
 });
 
 client.on(Events.InteractionCreate, async interaction => {
+    // Proactively check if this user needs to be pinged about missing forms/events
+    if (interaction.user && !interaction.user.bot) {
+        formEngine.handleUserOnline(interaction.user);
+    }
+
     // 1. Slash Commands
     if (interaction.isChatInputCommand()) {
         if (interaction.commandName === 'start') {
             await formEngine.startForm(interaction.user, interaction);
+
+        } else if (interaction.commandName === 'sync') {
+            // 🔒 Admin only
+            if (!isAdmin(interaction)) return denyAccess(interaction);
+            await formEngine.syncQuestions(interaction);
+
+        } else if (interaction.commandName === 'ask') {
+            // ✅ All roles — data visibility enforced inside askQuestion
+            const query = interaction.options.getString('query');
+            await formEngine.askQuestion(interaction, query);
+
+        } else if (interaction.commandName === 'announce') {
+            // 🔒 Admin only
+            if (!isAdmin(interaction)) return denyAccess(interaction);
+            const eventName = interaction.options.getString('event');
+            await formEngine.announceEvent(interaction, eventName);
+
+        } else if (interaction.commandName === 'menu') {
+            await formEngine.sendMainMenu(interaction);
+
+        } else if (interaction.commandName === 'audit_missing') {
+            // 🔒 Admin only
+            if (!isAdmin(interaction)) return denyAccess(interaction);
+            await interaction.reply({ content: '🔍 Starting background audit of all users...', ephemeral: true });
+            await formEngine.auditAllUsers(client);
+            await interaction.followUp({ content: '✅ Finished dispatching background missing information requests!', ephemeral: true });
+        }
+        return;
+    }
+
+    if (interaction.isModalSubmit()) {
+        // Smart Grouping: group modal submission (e.g. School & Education form)
+        if (interaction.customId.startsWith('group_modal_')) {
+            await formEngine.handleGroupModalSubmit(interaction);
+            return;
+        }
+        if (interaction.customId === 'ask_modal') {
+            const query = interaction.fields.getTextInputValue('query_input');
+            await formEngine.askQuestion(interaction, query);
+        } else if (interaction.customId === 'announce_modal') {
+            const eventName = interaction.fields.getTextInputValue('event_input');
+            await formEngine.announceEvent(interaction, eventName);
         }
         return;
     }
 
     // 2. Buttons & Select Menus
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
+        if (interaction.isButton() && interaction.customId.startsWith('event_')) {
+            const response = interaction.customId === 'event_accept' ? 'Accept' : 'Decline';
+            const eventName = interaction.message.embeds[0]?.title || 'Unknown Event';
+            await formEngine.handleEventResponse(interaction, eventName, response);
+            return;
+        }
+
+        // --- Smart Grouping: group category button click ---
+        if (interaction.isButton() && interaction.customId.startsWith('group_btn_')) {
+            await formEngine.handleGroupButtonClick(interaction);
+            return;
+        }
+
+        // --- Missing field BUTTON click (e.g. T-Shirt size: XS, S, M, L, XL) ---
+        if (interaction.isButton() && interaction.customId.startsWith('missing_btn_')) {
+            const selectedValue = interaction.customId.split('_').slice(3).join('_'); // Extract value after missing_btn_idx_
+            await formEngine.handleMissingFieldInteraction(interaction, selectedValue);
+            return;
+        }
+
+        // --- Missing field DROPDOWN selection (e.g. availability time slots) ---
+        if (interaction.isStringSelectMenu() && interaction.customId === 'missing_select') {
+            const selectedValue = interaction.values[0];
+            await formEngine.handleMissingFieldInteraction(interaction, selectedValue);
+            return;
+        }
+
+        if (interaction.isButton() && interaction.customId.startsWith('menu_')) {
+            await formEngine.handleMainMenuClick(interaction);
+            return;
+        }
+
         const user = interaction.user;
         let answer = null;
 
@@ -78,7 +198,6 @@ client.on(Events.InteractionCreate, async interaction => {
             // Interaction components usually should be disabled after use. 
             // For this simple bot, we might just assume the user moves on.
             // Or we could edit the original message to disable components. 
-            // Let's skip disabling for now to keep code simple, but proceed flow.
 
             if (typeof result === 'string') {
                 // Error / Validation message
@@ -95,13 +214,50 @@ client.on(Events.InteractionCreate, async interaction => {
 client.on(Events.MessageCreate, async message => {
     if (message.author.bot) return;
 
+    // Track user online activity and check for missing tasks
+    const handledProactive = await formEngine.handleUserOnline(message.author);
+    if (handledProactive) {
+        return; // Don't process further if we just triggered a proactive missing-info question
+    }
+
     // Check if user is in a session
-    const session = formEngine.getUserSession(message.author.id);
-    if (!session || session.is_completed) return;
+    const session = await formEngine.getUserSession(message.author.id);
+
+    // Auto-Welcome & Questionnaire Trigger fallback
+    if (!session) {
+        try {
+            await message.author.send("🌟 **Welcome to the JerseySTEM Community!** 🌟\n\nWe are incredibly excited to have you here. To set up your profile, please take 30 seconds to answer our quick onboarding questionnaire below:");
+            await formEngine.startForm(message.author, message.author);
+        } catch (e) {
+            console.error(`Could not send welcome message to ${message.author.tag}.`, e.message);
+        }
+        return; // Don't process further
+    }
+
+    if (session.is_completed) {
+        // 1. Two-Way Sync Interception (Are they answering a Missing Info question?)
+        const [pendingRows] = await getDb().execute("SELECT * FROM pending_updates WHERE user_id = ? AND status = 'asked' ORDER BY id ASC LIMIT 1", [message.author.id]);
+        if (pendingRows.length > 0) {
+            await formEngine.handleTwoWaySync(message, pendingRows[0].missing_column);
+            return;
+        }
+
+        // 2. Standard Chatbot 
+        // If they are not in a form session or waitlist, check if they are talking to the bot directly (pinging it, or in DMs)
+        const isDM = !message.guild;
+        if (isDM || message.mentions.has(client.user)) {
+            // Strip out the bot's mention from the message
+            const query = message.content.replace(`<@${client.user.id}>`, '').trim();
+            if (query.length > 0) {
+                await formEngine.askQuestion(message, query);
+            }
+        }
+        return;
+    }
 
     // Check if current question expects text
     // We need to peek at the current question.
-    const questions = formEngine.getSortedQuestions();
+    const questions = await formEngine.getSortedQuestions();
     const currentQ = questions.find(q => q.order_index === session.current_order_index);
 
     if (currentQ && currentQ.question_type === 'text') {
@@ -117,4 +273,46 @@ client.on(Events.MessageCreate, async message => {
     }
 });
 
-client.login(TOKEN);
+// Dedup lock — Discord sometimes fires PresenceUpdate twice per login
+const presenceLocks = new Set();
+
+// Greet users when they come online (Option B: Presence Intent)
+client.on(Events.PresenceUpdate, async (oldPresence, newPresence) => {
+    try {
+        const wasOffline = !oldPresence || oldPresence.status === 'offline';
+        const isNowOnline = newPresence.status !== 'offline';
+        if (!wasOffline || !isNowOnline) return;
+
+        const user = newPresence.user;
+        if (!user || user.bot) return;
+
+        // Prevent firing twice for the same login event
+        if (presenceLocks.has(user.id)) return;
+        presenceLocks.add(user.id);
+        setTimeout(() => presenceLocks.delete(user.id), 10000); // Clear after 10s
+
+        // Send welcome-back DM
+        try {
+            await user.send(`👋 Hey ${user.username}, welcome back! Great to see you online. 🌟`);
+        } catch (dmErr) {
+            console.log(`Could not DM ${user.username} on login: ${dmErr.message}`);
+        }
+
+        // Trigger proactive missing info check
+        await formEngine.handleUserOnline(user);
+
+    } catch (e) {
+        console.error('PresenceUpdate error:', e.message);
+    }
+});
+
+// Initialize DB and then login
+(async () => {
+    try {
+        await initDb();
+        console.log('Database connected correctly.');
+        client.login(TOKEN);
+    } catch (e) {
+        console.error('Failed connecting or initializing DB:', e);
+    }
+})();

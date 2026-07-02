@@ -1,0 +1,75 @@
+--- Google Sheet: 1zAPoVOSsVHe4svVcUOwE_PV7Ykukk8H-94pMDt5zCDg (GID: 0) ---
+,Timestamp,User ID,Username,What is your full name?,Which department are you in?,Do you have remote work experience?,Select your programming skills (Multiple),Any additional comments?,What is your favorite color?,What is your T-shirt size?,What is your availability?,Are you interested in the upcoming Fall event?,Which of the following best describes your status with JerseySTEM?,"If you are a PROSPECTIVE instructor, why are you interested in joining? (If not, type 'skip')","If you are a CURRENT instructor, thank you for teaching! What classes are you currently teaching? (If not, type 'skip')","If you are a RETURNING/FORMER instructor, good to see you back! What classes did you teach previously? (If not, type 'skip')"
+,2026-02-16T20:33:12.469Z,1233899503950631014,taanihihi_50147,jake bayer,Engineering,Yes,"[""Python"",""JavaScript""]",skip,,,,,,,,
+,2026-02-23T04:35:32.643Z,1233899503950631014,taanihihi_50147,max,Sales,No,"[""Python""]",no,,,,,,,,
+,2026-02-23T05:35:39.651Z,1233899503950631014,taanihihi_50147,,,,,,blue,,,,,,,
+,2026-02-23T05:45:28.814Z,1233899503950631014,taanihihi_50147,,,,,,,M,"[""Afternoons""]",Yes,,,,
+,2026-02-23T07:22:16.339Z,1233899503950631014,taanihihi_50147,hina S,Marketing,No,"[""Rust"",""Go"",""Python""]",skip,blue,M,"[""Evenings"",""Weekends""]",Yes,,,,
+,2026-02-24T18:17:59.329Z,1233899503950631014,taanihihi_50147,hi,Engineering,No,"[""Python"",""Rust""]",skip,blue,M,"[""Evenings"",""Weekends""]",No,,,,
+,2026-03-10T01:34:34.531Z,732960228752228423,dstroke17,Sai,Engineering,Yes,"[""\""Python\""""]",Skip,Blue,M,"[""Afternoons""]",Yes,,,,
+,2026-03-10T02:06:18.930Z,1233899503950631014,taanihihi_50147,haley,,,,,,,,,Current Program Instructor,skip,skip,skip
+
+--- Google Sheet: 1zAPoVOSsVHe4svVcUOwE_PV7Ykukk8H-94pMDt5zCDg (GID: 2099380006) ---
+question_text,question_type,order_index,is_required,choices
+What is your full name?,text,1,TRUE,
+Which department are you in?,single_choice,2,TRUE,"[""Engineering"", ""HR"", ""Sales"", ""Marketing""]"
+Do you have remote work experience?,yes_no,3,TRUE,
+Select your programming skills (Multiple),multiple_choice,4,FALSE,"[Javascript"""",""Python"",""C++"",""Rust"",""Go""]"
+Any additional comments?,text,5,FALSE,
+What is your favorite color?,text,6,TRUE,
+What is your T-shirt size?,single_choice,7,TRUE,"[""S"", ""M"", ""L"", ""XL""]"
+What is your availability?,multiple_choice,8,TRUE,"[""Mornings"", ""Afternoons"", ""Evenings"", ""Weekends""]"
+Are you interested in the upcoming Fall event?,yes_no,9,TRUE,
+
+--- Google Sheet: 1zAPoVOSsVHe4svVcUOwE_PV7Ykukk8H-94pMDt5zCDg (GID: 69944674) ---
+Population,,,,Program Instructors,,,
+,,AI ?,,Prospective,Current,Former,
+Joia Story 1,Missing Information,Not really,Khadija Begum,XX,XXX,X,"Agent that knows what information is needed and ""chases"" people to get it and store in Salesforce"
+Story 2,"Event Particiaption (Raffles, Socials,....)",Not really,Prateek Kumar,XXX,XX,X,JerseySTEM has a schedule of Events. Everyone is invited. Some end up partiicpating. We want to increase particiaption
+Story 3,Shout out (with Photos),Likely,Khadija Begum,X,XX,X,REcognize particiaption according to events in the record
+Story 4,Chat- Answer questions,Likely,Khadija Begum,X,X,X,Regilar chat agenet
+Story 5,Gamification,?,???,XXX,XX,X,Initiaite engageing activities/games/fund things
+,,,,,,,
+,,,,,,,
+,,,,,,,
+,,,,,,,
+PrepWork,,Make,API callls?,,,,
+Jira Story 11,READ connection with MySQL (iCIMS),X,X,,,,
+Jira Story 12,TWO way connection Google Sheet/Excel,X,X,,,,
+Jira Story 13,Two way conection with Salesforce,X,X,,,,
+Jira Story 14,Read Connection to Google Photos,,,,,,
+Jira Story 15,Connection to Gemini API,X,X,,,,
+
+--- Google Sheet: 1zAPoVOSsVHe4svVcUOwE_PV7Ykukk8H-94pMDt5zCDg (GID: 1072111664) ---
+First Name,Last Name,Music Genre,Avaliable Monday,Abavailable Tuesday,T-Shirt Size,Major,University
+Tanisha Verma,Verma,,,,,,
+Mai Linh Luong,,,,,Small,,
+Abhilash Saravana,,,,Yes,,,
+Chetan Valluru,,,Yes,,,,
+Tanishq Sharma,,,,,,,
+Marcel Blonk,,Jazz,,,Medium,,
+Nabil Mouline,,Rock,,,,,
+,,,,,,,
+,,,,,,,
+,,,,,,,
+First Name,Required,,,,,,
+Last Name,Required,,,,,,
+Music Genre,Required,,,,,,
+Avaliable Monday,Optional,,,,,,
+Abavailable Tuesday,Optional,,,,,,
+T-Shirt Size,Optional,,,,,,
+Major,Information,,,,,,
+University,Infromation,,,,,,
+
+--- Google Sheet: 1zAPoVOSsVHe4svVcUOwE_PV7Ykukk8H-94pMDt5zCDg (GID: 103041255) ---
+,,,,,Past,Future,,
+,2/10/2026,2/17/2026,2/24/2026,3/3/2026,3/10/2026,3/17/2026,3/24/2026,3/31/2026
+First Name,Raffle,Kahoot,Bingo,GeoFinder,Kahoot,Kahoot,Bingo,Raffle
+Tanisha Verma,Y,,Y,W,,Y,,
+Mai Linh Luong,,Y,W,Y,Y,,,
+Abhilash Saravana,,,Y,W,,,N,
+Chetan Valluru,,,Y,Y,Y,,,
+Tanishq Sharma,,,Y,,,,,Y
+Marcel Blonk,,,,W,,,,
+Nabil Mouline,,Y,,,,,,
+
