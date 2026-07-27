@@ -1,0 +1,28 @@
+# Node modules
+node_modules/
+npm-debug.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Git
+.git/
+.gitignore
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+fetch_output.txt
+js-discord-bot.txt

@@ -1,0 +1,28 @@
+services:
+  bot:
+    build: .
+    container_name: jerseystem-discord-bot
+    restart: always
+    env_file:
+      - .env
+    # On macOS/Windows, to connect to MySQL running on the host machine (127.0.0.1):
+    # Set DB_HOST=host.docker.internal in your .env file and uncomment below:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+
+    # Alternatively, if you want docker-compose to run a MySQL container for you,
+    # you can uncomment the db service below and change DB_HOST=db in your .env:
+    # db:
+    #   image: mysql:8.0
+    #   container_name: bot_mysql
+    #   restart: always
+    #   environment:
+    #     MYSQL_ROOT_PASSWORD: root
+    #     MYSQL_DATABASE: discord_bot
+    #   ports:
+    #     - "3306:3306"
+    #   volumes:
+    #     - mysql_data:/var/lib/mysql
+
+# volumes:
+#   mysql_data:
