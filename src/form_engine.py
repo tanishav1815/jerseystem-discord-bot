@@ -1100,8 +1100,11 @@ class FormEngine:
             )
             view.add_item(select)
             
-        elif q_type == 'text':
-            embed.add_field(name='Instructions', value='Please type your answer in the chat.')
+        elif q_type in ('text', 'email'):
+            if q_type == 'email' or 'email' in question['question_text'].lower():
+                embed.add_field(name='Instructions', value='Please type your email address (e.g. `name@example.com`) directly in this chat.')
+            else:
+                embed.add_field(name='Instructions', value='Please type your answer in the chat.')
 
         payload: dict[str, Any] = {'embeds': [embed]}
         if len(view.children) > 0:

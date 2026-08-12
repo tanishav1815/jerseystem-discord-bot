@@ -183,7 +183,7 @@ async def on_message(message: discord.Message):
     questions = await form_engine.get_sorted_questions()
     current_q = next((q for q in questions if q['order_index'] == session['current_order_index']), None)
 
-    if current_q and current_q['question_type'] == 'text':
+    if current_q and current_q['question_type'] in ('text', 'email'):
         result = await form_engine.handle_input(message.author, message.content, 'text')
         if isinstance(result, str):
             await message.reply(result)
