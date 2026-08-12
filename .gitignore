@@ -3,3 +3,8 @@ node_modules
 *.sqlite
 # Mac
 .DS_Store
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/

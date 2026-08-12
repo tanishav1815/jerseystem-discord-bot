@@ -4,7 +4,7 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from src import db
-from src.form_engine import form_engine
+from src.form_engine import form_engine, VerifyGateView, VerifyEmailModal
 from src.permissions import is_admin, deny_access
 
 load_dotenv()
@@ -26,6 +26,9 @@ presence_locks = set()
 async def on_ready():
     print(f"Ready! Logged in as {bot.user}")
     
+    # Register persistent button views
+    bot.add_view(VerifyGateView())
+    
     # Register slash commands globally
     try:
         synced = await bot.tree.sync()
@@ -38,6 +41,32 @@ async def on_ready():
         daily_audit_task.start()
 
 # Slash Commands
+@bot.tree.command(name="verify", description="Verify your email to unlock access to JerseySTEM channels")
+async def verify(interaction: discord.Interaction):
+    await interaction.response.send_modal(VerifyEmailModal())
+
+@bot.tree.command(name="setup_verification", description="Post the official Verification Gate card and button in this channel (Admin only)")
+async def setup_verification(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        return await deny_access(interaction)
+    
+    embed = discord.Embed(
+        title="🌟 Welcome to JerseySTEM! 🌟",
+        description=(
+            "Welcome to the official JerseySTEM Discord community!\n\n"
+            "**To unlock access to our channels and discussions:**\n"
+            "1. Click the **Verify Email to Unlock Channels** button below.\n"
+            "2. Enter your valid email address in the pop-up.\n"
+            "3. Your **Validated Visitor** access will be granted instantly!\n\n"
+            "🔒 *General channels & community categories are unlocked upon verification.*"
+        ),
+        color=0x00AE86
+    )
+    embed.set_footer(text="JerseySTEM Community Gate")
+    if interaction.channel:
+        await interaction.channel.send(embed=embed, view=VerifyGateView())
+    await interaction.response.send_message("✅ Verification Gate posted successfully!", ephemeral=True)
+
 @bot.tree.command(name="start", description="Start the onboarding questionnaire")
 async def start(interaction: discord.Interaction):
     await form_engine.start_form(interaction.user, interaction)
@@ -79,6 +108,20 @@ async def on_interaction(interaction: discord.Interaction):
     if interaction.type in (discord.InteractionType.application_command, discord.InteractionType.modal_submit):
         return
     await form_engine.handle_interaction(interaction)
+
+# Member Join Event Handler
+@bot.event
+async def on_member_join(member: discord.Member):
+    if member.bot:
+        return
+    print(f"DEBUG: Member joined: {member.name} ({member.id})")
+    session = await form_engine.get_user_session(str(member.id))
+    if not session or not session.get('is_completed'):
+        try:
+            await member.send("🌟 **Welcome to the JerseySTEM Community!** 🌟\n\nWe are excited to have you here. To get verified and unlock channel access, please take 30 seconds to answer our quick onboarding questionnaire below:")
+            await form_engine.start_form(member, member)
+        except Exception as e:
+            print(f"Could not send welcome DM to joining member {member.name}: {e}")
 
 # Message Event Handler
 @bot.event

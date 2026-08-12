@@ -7,6 +7,14 @@ def get_admin_role_name():
 def get_instructor_role_name():
     return os.getenv('INSTRUCTOR_ROLE_NAME', 'Program Instructor')
 
+def get_validated_visitor_role_name():
+    return os.getenv('VALIDATED_VISITOR_ROLE_NAME', 'Validated Visitor')
+
+def is_validated_visitor(member: discord.Member | discord.User) -> bool:
+    if isinstance(member, discord.Member):
+        return any(r.name == get_validated_visitor_role_name() for r in member.roles)
+    return False
+
 def is_admin(interaction: discord.Interaction) -> bool:
     user_id = str(interaction.user.id)
     guild = interaction.guild

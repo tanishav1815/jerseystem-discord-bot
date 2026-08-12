@@ -116,11 +116,12 @@ async def init_db():
             if row and row[0] == 0:
                 print('Seeding database with sample questions...')
                 questions = [
-                    ("What is your full name?", "text", 1, True, None),
-                    ("Which of the following best describes your status with JerseySTEM?", "single_choice", 2, True, json.dumps(["Prospective Program Instructor", "Current Program Instructor", "Returning/Former Instructor"])),
-                    ("If you are a PROSPECTIVE instructor, why are you interested in joining? (If not, type 'skip')", "text", 3, True, None),
-                    ("If you are a CURRENT instructor, thank you for teaching! What classes are you currently teaching? (If not, type 'skip')", "text", 4, True, None),
-                    ("If you are a RETURNING/FORMER instructor, good to see you back! What classes did you teach previously? (If not, type 'skip')", "text", 5, True, None)
+                    ("Please enter your email address to get verified:", "email", 1, True, None),
+                    ("What is your full name?", "text", 2, True, None),
+                    ("Which of the following best describes your status with JerseySTEM?", "single_choice", 3, True, json.dumps(["Prospective Program Instructor", "Current Program Instructor", "Returning/Former Instructor"])),
+                    ("If you are a PROSPECTIVE instructor, why are you interested in joining? (If not, type 'skip')", "text", 4, True, None),
+                    ("If you are a CURRENT instructor, thank you for teaching! What classes are you currently teaching? (If not, type 'skip')", "text", 5, True, None),
+                    ("If you are a RETURNING/FORMER instructor, good to see you back! What classes did you teach previously? (If not, type 'skip')", "text", 6, True, None)
                 ]
                 for q in questions:
                     await cur.execute("""

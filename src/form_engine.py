@@ -6,9 +6,35 @@ import discord
 from typing import Any
 from google import genai
 from src import db
-from src.permissions import is_admin
+from src.permissions import is_admin, get_validated_visitor_role_name
+from src.validators import is_valid_email, sanitize_email
 
 # Define Modal classes first so they can be referenced inside FormEngine or Views
+class VerifyEmailModal(discord.ui.Modal, title='JerseySTEM Email Verification'):
+    email_input = discord.ui.TextInput(
+        label='Enter your Email Address',
+        style=discord.TextStyle.short,
+        placeholder='e.g., yourname@example.com',
+        required=True,
+        max_length=254,
+        custom_id='verify_email_input'
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await form_engine.handle_verify_email_modal(interaction, self.email_input.value)
+
+class VerifyGateView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="✉️ Verify Email to Unlock Channels",
+        style=discord.ButtonStyle.success,
+        custom_id="verify_gate_btn"
+    )
+    async def verify_button_click(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(VerifyEmailModal())
+
 class AskModal(discord.ui.Modal, title='Ask the Knowledge Base'):
     query_input = discord.ui.TextInput(
         label='What is your question?',
@@ -66,6 +92,11 @@ class DynamicGroupModal(discord.ui.Modal):
             val = text_input.value.strip() if text_input.value else None
             if not val:
                 continue
+            if 'email' in col_name.lower() or 'email' in text_input.label.lower():
+                if not is_valid_email(val):
+                    errors.append(f"{text_input.label} (invalid email format)")
+                    continue
+                val = sanitize_email(val)
             try:
                 await form_engine._update_contact_by_column_name(interaction.user, col_name, val)
                 saved += 1
@@ -76,9 +107,12 @@ class DynamicGroupModal(discord.ui.Modal):
         if saved > 0:
             msg = f"✅ Saved **{saved}** field(s) to your profile!"
             if errors:
-                msg += f"\n⚠️ Could not save: {', '.join(errors)}"
+                msg += f"\n⚠️ Issues saving: {', '.join(errors)}"
         else:
-            msg = "⚠️ No fields were saved. Please fill in at least one field."
+            if errors:
+                msg = f"⚠️ Could not save fields:\n- " + "\n- ".join(errors)
+            else:
+                msg = "⚠️ No fields were saved. Please fill in at least one field."
             
         await interaction.followup.send(content=msg, ephemeral=True)
 
@@ -555,6 +589,128 @@ class FormEngine:
         emoji = self.group_emojis.get(group_name, '📝')
         await interaction.response.send_modal(DynamicGroupModal(f"{emoji} {group_name}", ai_fields, current_values))
 
+    async def grant_validated_visitor_role(self, user_or_member, guild=None) -> bool:
+        role_name = get_validated_visitor_role_name()
+        
+        target_guild = guild if guild else getattr(user_or_member, 'guild', None)
+        # If we have a direct guild context or member
+        if target_guild:
+            member = user_or_member if hasattr(user_or_member, 'roles') else target_guild.get_member(user_or_member.id)
+            if member:
+                role = discord.utils.get(target_guild.roles, name=role_name)
+                if not role:
+                    try:
+                        role = await target_guild.create_role(
+                            name=role_name,
+                            color=discord.Color.teal(),
+                            reason="Auto-created role for validated visitors"
+                        )
+                        print(f"Auto-created role '{role_name}' in guild '{target_guild.name}'")
+                    except Exception as e:
+                        print(f"Could not auto-create role '{role_name}': {e}")
+                if role and role not in member.roles:
+                    try:
+                        await member.add_roles(role, reason="Validated Visitor email verified")
+                        print(f"Successfully granted '{role_name}' role to {member.name}")
+                        return True
+                    except Exception as e:
+                        print(f"Failed to add role '{role_name}' to {member.name}: {e}")
+            return False
+
+        # If from DM without guild context, iterate mutual_guilds
+        assigned_any = False
+        guilds_to_check = getattr(user_or_member, 'mutual_guilds', [])
+        for g in guilds_to_check:
+            member = g.get_member(user_or_member.id)
+            if member:
+                role = discord.utils.get(g.roles, name=role_name)
+                if not role:
+                    try:
+                        role = await g.create_role(
+                            name=role_name,
+                            color=discord.Color.teal(),
+                            reason="Auto-created role for validated visitors"
+                        )
+                    except Exception as e:
+                        print(f"Could not auto-create role in {g.name}: {e}")
+                if role and role not in member.roles:
+                    try:
+                        await member.add_roles(role, reason="Validated Visitor email verified")
+                        print(f"Successfully granted '{role_name}' role to {member.name} in {g.name}")
+                        assigned_any = True
+                    except Exception as e:
+                        print(f"Failed to add role '{role_name}' in {g.name}: {e}")
+        return assigned_any
+
+    async def handle_verify_email_modal(self, interaction: discord.Interaction, raw_email: str):
+        if not is_valid_email(raw_email):
+            await interaction.response.send_message(
+                f"❌ **Invalid Email:** `{raw_email}` does not look like a valid email address.\n"
+                "Please make sure it is in a standard format (e.g., `name@example.com`) and try again.",
+                ephemeral=True
+            )
+            return
+
+        cleaned_email = sanitize_email(raw_email)
+        user = interaction.user
+        guild = interaction.guild
+
+        # 1. Update Database (Contact & answers)
+        try:
+            questions = await self.get_sorted_questions()
+            email_q = next((q for q in questions if q['question_type'] == 'email' or 'email' in q['question_text'].lower()), None)
+            q_id = email_q['id'] if email_q else 1
+
+            await db.execute(
+                'INSERT INTO answers (user_id, question_id, response, timestamp) VALUES (%s, %s, %s, %s)',
+                (str(user.id), q_id, cleaned_email, int(discord.utils.utcnow().timestamp() * 1000))
+            )
+            try:
+                await self._update_contact_by_column_name(user, 'Email', cleaned_email)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Error persisting verified email: {e}")
+
+        # 2. Grant Validated Visitor Role
+        role_assigned = await self.grant_validated_visitor_role(user, guild)
+        role_name = get_validated_visitor_role_name()
+
+        # 3. Progress Onboarding session if on question 1
+        try:
+            session = await self.get_user_session(str(user.id))
+            questions = await self.get_sorted_questions()
+            if session and session['current_order_index'] == 1:
+                next_q = questions[1] if len(questions) > 1 else None
+                if next_q:
+                    await db.execute(
+                        'UPDATE user_sessions SET current_order_index = %s, updated_at = %s WHERE user_id = %s',
+                        (next_q['order_index'], int(discord.utils.utcnow().timestamp() * 1000), str(user.id))
+                    )
+        except Exception as s_err:
+            print(f"Session progress error: {s_err}")
+
+        # 4. Confirmation Message
+        if role_assigned or (isinstance(user, discord.Member) and any(r.name == role_name for r in user.roles)):
+            msg = (
+                f"🎉 **Verification Successful!**\n\n"
+                f"Your email (`{cleaned_email}`) has been verified, and the **{role_name}** role has been granted.\n\n"
+                f"🔓 **Access Unlocked:**\n"
+                f"• **General Channels**: View & Post messages\n"
+                f"• **Other Categories**: View-only community access\n\n"
+                f"Welcome to JerseySTEM! 🚀"
+            )
+        else:
+            msg = (
+                f"✅ **Email Verified:** `{cleaned_email}`\n\n"
+                f"Your email has been recorded in our system. You now have visitor verification status."
+            )
+
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
     async def _update_contact_by_column_name(self, discord_user, column_name, value):
         valid_fields, _ = await db.execute(
             'SELECT FIELD_NAME FROM AI_fields WHERE FIELD_NAME = %s LIMIT 1',
@@ -972,10 +1128,33 @@ class FormEngine:
 
         answer_value = None
 
-        if current_q['question_type'] == 'text':
+        if current_q['question_type'] in ('text', 'email'):
             if type != 'text':
                 return "Please type your answer."
-            answer_value = input_val
+            
+            is_email_question = (
+                current_q['question_type'] == 'email' or 
+                'email' in current_q['question_text'].lower()
+            )
+
+            if is_email_question:
+                val_trimmed = input_val.strip()
+                if val_trimmed.lower() == 'skip' and not current_q['is_required']:
+                    answer_value = 'skip'
+                elif not is_valid_email(val_trimmed):
+                    return "❌ That does not look like a valid email address. Please enter a valid email (e.g., `name@example.com`):"
+                else:
+                    answer_value = sanitize_email(val_trimmed)
+                    try:
+                        await self._update_contact_by_column_name(user, 'Email', answer_value)
+                    except Exception as err:
+                        print(f"Contact email sync warning: {err}")
+                    try:
+                        await self.grant_validated_visitor_role(user)
+                    except Exception as r_err:
+                        print(f"Role grant warning: {r_err}")
+            else:
+                answer_value = input_val
         else:
             if type == 'text':
                 return "Please use the buttons or menu to answer."
@@ -1069,13 +1248,25 @@ class FormEngine:
             print("WEBHOOK_URL is missing! Unable to sync to Google Sheets.")
             return
 
+        is_email_field = (
+            missing_column.lower() in ('email', 'school_email__c', 'personal_email__c') or
+            'email' in missing_column.lower()
+        )
+        if is_email_field:
+            if not is_valid_email(message.content.strip()):
+                await message.reply("❌ That does not look like a valid email address. Please enter a valid email (e.g., `name@example.com`):")
+                return
+            content_value = sanitize_email(message.content)
+        else:
+            content_value = message.content
+
         try:
             payload = {
                 'action': 'update_missing_info',
                 'user_id': str(message.author.id),
                 'username': message.author.name,
                 'column': missing_column,
-                'value': message.content,
+                'value': content_value,
                 'timestamp': discord.utils.utcnow().isoformat()
             }
 
@@ -1084,10 +1275,10 @@ class FormEngine:
 
             await db.execute(
                 'INSERT INTO auto_updates (user_id, column_name, value, timestamp) VALUES (%s, %s, %s, %s)',
-                (str(message.author.id), missing_column, message.content, int(discord.utils.utcnow().timestamp() * 1000))
+                (str(message.author.id), missing_column, content_value, int(discord.utils.utcnow().timestamp() * 1000))
             )
 
-            await self._update_contact_field(message.author, missing_column, message.content)
+            await self._update_contact_field(message.author, missing_column, content_value)
 
             print(f"Successfully pushed 2-Way Sync update for {message.author.name}: [{missing_column}] = {message.content}")
 
