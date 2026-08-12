@@ -63,7 +63,7 @@ async def setup_verification(interaction: discord.Interaction):
         color=0x00AE86
     )
     embed.set_footer(text="JerseySTEM Community Gate")
-    if interaction.channel:
+    if isinstance(interaction.channel, discord.abc.Messageable):
         await interaction.channel.send(embed=embed, view=VerifyGateView())
     await interaction.response.send_message("✅ Verification Gate posted successfully!", ephemeral=True)
 
